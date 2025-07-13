@@ -1,7 +1,7 @@
 ## Proposed File Structure
 
 ```
-myagentsai-exercise-coach/
+exercise-coach-agent/
 ├── app/
 │   ├── __init__.py
 │   ├── agent.py
