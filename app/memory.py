@@ -25,4 +25,4 @@ class MemoryStore:
             if user_id in self._store:
                 del self._store[user_id]
 
-memory_store = MemoryStore() 
+memory_store = MemoryStore()

@@ -1,95 +1,100 @@
-from langchain.tools import Tool
+# app/tools.py
 from app.memory import memory_store
-from typing import Any
+from datetime import datetime, timedelta
 import random
-from datetime import datetime
 
 EXERCISES = [
-    "Do 10 push-ups!",
-    "Take a brisk 5-minute walk.",
-    "Try 1 minute of deep breathing.",
-    "Do 15 squats!",
-    "Stretch your arms and back for 2 minutes.",
-    "Do 20 jumping jacks!",
-    "Hold a plank for 30 seconds.",
-    "Do 10 lunges (5 each leg)."
+    "Do 10 push-ups",
+    "Take a 5-minute walk", 
+    "Do 15 squats",
+    "Hold a plank for 30 seconds",
+    "Do 10 lunges (5 each leg)",
+    "Try 1 minute of deep breathing"
 ]
+
+def should_send_exercise(user_id: str) -> bool:
+    """Check if it's time to send exercise to user."""
+    session = memory_store.get(user_id)
+    if not session.get("scheduled_hour"):
+        return False
+        
+    now = datetime.now()
+    scheduled_hour = session.get("scheduled_hour")
+    scheduled_minute = session.get("scheduled_minute", 0)
+    
+    # Check if it's the right time and no exercise sent today
+    if (now.hour == scheduled_hour and 
+        abs(now.minute - scheduled_minute) <= 30):  # 30-minute window
+        
+        last_exercise_date = session.get("last_exercise_date")
+        today = now.date().isoformat()
+        
+        if last_exercise_date != today:
+            return True
+    
+    return False
+
+def should_send_reminder(user_id: str) -> bool:
+    """Check if we should send a reminder."""
+    session = memory_store.get(user_id)
+    
+    if not session.get("last_exercise") or session.get("feedback"):
+        return False
+        
+    # Check time since exercise was sent
+    exercise_time_str = session.get("exercise_sent_at")
+    if not exercise_time_str:
+        return False
+        
+    exercise_time = datetime.fromisoformat(exercise_time_str)
+    hours_since = (datetime.now() - exercise_time).total_seconds() / 3600
+    
+    reminders_sent = session.get("reminders_sent", 0)
+    
+    # Send reminders at 2h, 4h, 6h after exercise
+    if (hours_since >= 2 and reminders_sent == 0) or \
+       (hours_since >= 4 and reminders_sent == 1) or \
+       (hours_since >= 6 and reminders_sent == 2):
+        return True
+        
+    return False
 
 def send_exercise_fn(user_id: str) -> str:
     """Send a new exercise to the user."""
-    print(f"Sending exercise to user {user_id}")
-    
-    # Check if user already has an unfinished exercise
-    session = memory_store.get(user_id)
-    if session.get("last_exercise") and not session.get("feedback"):
-        return f"You still have an unfinished exercise: {session['last_exercise']} Please complete it first!"
-    
     exercise = random.choice(EXERCISES)
+    now = datetime.now()
+    
     memory_store.update(user_id, {
-        "last_exercise": exercise, 
-        "feedback": None, 
+        "last_exercise": exercise,
+        "feedback": None,
         "reminders_sent": 0,
-        "exercise_sent_at": datetime.now().isoformat()
+        "exercise_sent_at": now.isoformat(),
+        "last_exercise_date": now.date().isoformat()
     })
     
-    return f"Here's your daily exercise: {exercise} Let me know when you're done!"
-
-def check_feedback_fn(user_id: str) -> str:
-    """Check if the user has provided feedback."""
-    session = memory_store.get(user_id)
-    
-    if not session.get("last_exercise"):
-        return "No exercise has been sent yet. Let me send you one!"
-    
-    feedback = session.get("feedback")
-    if feedback:
-        return f"Thanks for your feedback: '{feedback}'. Great job completing your exercise!"
-    else:
-        reminders = session.get("reminders_sent", 0)
-        if reminders >= 3:
-            return "I've sent you 3 reminders already. I'm still waiting for your feedback on the exercise. Please let me know when you complete it!"
-        else:
-            return "I'm still waiting for your feedback. Let me know when you've completed the exercise!"
+    return EXERCISES[0] # TODO: Remove this ; just for testing
 
 def send_reminder_fn(user_id: str) -> str:
     """Send a reminder to the user."""
     session = memory_store.get(user_id)
+    exercise = session.get("last_exercise", "your exercise")
+    reminders_sent = session.get("reminders_sent", 0)
     
-    # Check if feedback already received
-    if session.get("feedback"):
-        return "No reminder needed - you've already completed the exercise!"
+    memory_store.update(user_id, {"reminders_sent": reminders_sent + 1})
     
-    # Check if exercise was sent
-    if not session.get("last_exercise"):
-        return "No exercise to remind about. Let me send you one first!"
-    
-    reminders = session.get("reminders_sent", 0)
-    if reminders >= 3:
-        return "Maximum reminders sent. I'll wait for your feedback."
-    
-    reminders += 1
-    memory_store.update(user_id, {"reminders_sent": reminders})
-    
-    exercise = session.get("last_exercise")
-    return f"Reminder {reminders}/3: Don't forget to complete your exercise: {exercise} Reply when done!"
+    return f"Reminder {reminders_sent + 1}/3: Don't forget to complete: {exercise}"
 
-# Create tools with better descriptions for ReAct reasoning
-send_exercise = Tool(
-    name="send_exercise",
-    func=send_exercise_fn,
-    description="Send a new daily exercise to the user. Use this when the user has no current exercise or has completed their previous exercise."
-)
+def check_feedback_fn(user_id: str) -> str:
+    """Check for user feedback."""
+    session = memory_store.get(user_id)
+    feedback = session.get("feedback")
+    
+    if feedback:
+        return feedback
+    return "No feedback yet"
 
-check_feedback = Tool(
-    name="check_feedback",
-    func=check_feedback_fn,
-    description="Check if the user has provided feedback on their exercise. Use this to see the current status of the user's exercise completion."
-)
-
-send_reminder = Tool(
-    name="send_reminder",
-    func=send_reminder_fn,
-    description="Send a reminder to the user about their incomplete exercise. Use this when the user has an exercise but no feedback, and hasn't received maximum reminders yet."
-)
-
-tools = [send_exercise, check_feedback, send_reminder]
+def schedule_session_fn(user_id: str, time_str: str) -> str:
+    """Schedule a workout session."""
+    from app.scheduler import set_user_schedule
+    set_user_schedule(time_str)
+    return f"Scheduled for {time_str} daily"

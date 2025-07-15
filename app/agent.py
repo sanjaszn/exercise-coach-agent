@@ -1,85 +1,204 @@
-from langchain.agents import initialize_agent, AgentType
+# app/agent.py
+from typing import TypedDict
+from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain_openai import ChatOpenAI
-from app.tools import tools
+from app.routing import route_input
+from app.tools import send_exercise_fn, send_reminder_fn, check_feedback_fn
+from app.scheduler import schedule_session_fn
 from app.memory import memory_store
 import os
 from dotenv import load_dotenv
 
 # Load .env
 load_dotenv()
-print("API Key:", os.getenv("OPENROUTER_API_KEY")[:6] + "...")
 
-# Deepseek LLM setup
+# Initialize DeepSeek LLM via OpenRouter
 llm = ChatOpenAI(
+    model="deepseek/deepseek-chat-v3-0324:free",
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY"),
-    model="deepseek/deepseek-chat-v3-0324:free",
-    temperature=0.1,
-    max_tokens=256,
+    temperature=0.2,
+    max_tokens=1000
 )
 
-# Custom system prompt to guide ReAct reasoning
-SYSTEM_PROMPT = """
-You are a fitness coach agent that helps users with daily exercises. Follow this exact logic:
+# Define AgentState
+class AgentState(TypedDict):
+    input: str
+    user_id: str
+    coach_id: str
+    node_output: str  # Intermediate output from nodes
+    output: str       # Final output after finalize
 
-1. If user has no last_exercise: Send a new exercise using send_exercise tool
-2. If user has last_exercise but no feedback:
-   - If reminders_sent < 3: Send a reminder using send_reminder tool
-   - If reminders_sent >= 3: Use check_feedback tool and wait
-3. If user has feedback: Use check_feedback tool to thank them and acknowledge completion
+# Nodes
+def send_exercise_node(state: AgentState) -> dict:
+    """Send a new exercise to the user."""
+    user_id = state["user_id"]
+    result = send_exercise_fn(user_id)  # From tools.py
+    memory_store.update(user_id, {"last_exercise": result, "reminders_sent": 0})
+    return {"node_output": f"Here's your daily exercise: {result}"}
 
-Always think step by step and use the appropriate tool based on the user's current state.
-Be encouraging and supportive in your responses.
-"""
+def send_reminder_node(state: AgentState) -> dict:
+    """Send a reminder if feedback is missing."""
+    user_id = state["user_id"]
+    session = memory_store.get(user_id) or {}
+    reminders = session.get("reminders_sent", 0)
+    if reminders < 3:
+        result = send_reminder_fn(user_id)  # From tools.py
+        memory_store.update(user_id, {"reminders_sent": reminders + 1})
+        return {"node_output": f"Reminder: {result}"}
+    else:
+        result = check_feedback_fn(user_id)  # From tools.py
+        return {"node_output": result}
 
-agent = initialize_agent(
-    tools,
-    llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=True,
-    max_iterations=3,  # Prevent infinite loops
-    early_stopping_method="generate",
-    agent_kwargs={
-        "prefix": SYSTEM_PROMPT,
-        "format_instructions": "Use the following format:\n\nThought: think about what to do\nAction: the action to take\nAction Input: the input to the action\nObservation: the result of the action\n... (this Thought/Action/Action Input/Observation can repeat N times)\nThought: I now know the final answer\nFinal Answer: the final answer to the original input"
-    }
-)
+def check_feedback_node(state: AgentState) -> dict:
+    """Check user feedback and thank them."""
+    user_id = state["user_id"]
+    result = check_feedback_fn(user_id)  # From tools.py
+    if result != "No feedback yet":
+        return {"node_output": f"Thanks for completing your exercise! Your feedback: '{result}'"}
+    return {"node_output": "Still waiting for your feedback. Please let me know when you're done!"}
 
-def run_agent_session(user_id: str) -> str:
-    """Run agent session with improved state management."""
-    session = memory_store.get(user_id)
+def schedule_node(state: AgentState) -> dict:
+    """Schedule a workout session."""
+    user_id = state["user_id"]
+    time_str = state["input"].split("at")[-1].strip() if "at" in state["input"] else "12:00"
+    result = schedule_session_fn(user_id, time_str)  # From scheduler.py
+    memory_store.update(user_id, {"scheduled_time": time_str})
+    return {"node_output": f"Session scheduled for {time_str}: {result}"}
+
+def answer_workout_question_node(state: AgentState) -> dict:
+    """Answer workout-related questions using LLM."""
+    user_id = state["user_id"]
+    question = state["input"]
+    response = llm.invoke(f"Answer this workout question: {question}")
+    return {"node_output": response.content}
+
+def finalize_node(state: AgentState) -> dict:
+    """Add viral loop and finalize response."""
+    node_output = state.get("node_output", "")
+    coach_id = state["coach_id"]
+    viral_text = f"\nPowered by MyAgentsAI: https://myagents.ai/signup?ref={coach_id}"
+    return {"output": f"{node_output}{viral_text}"}
+
+# Routing function
+def route_to_node(state: AgentState) -> str:
+    """Route input to appropriate node."""
+    # Stop if output is already set (after finalize)
+    if state.get("output"):
+        return END
     
-    # Create context for the agent
-    context = f"""
-    Analyze this user's current state and take appropriate action:
+    user_id = state["user_id"]
+    session = memory_store.get(user_id) or {}  # Ensure session is not None
+    user_input = state["input"].lower()
+
+    # Route based on input intent first - UPDATED to pass user_id
+    intent = route_input(user_input, user_id)  # From routing.py
+    if intent == "schedule":
+        return "schedule"
+    elif intent == "question":
+        return "answer_workout_question"
+    elif intent == "check_feedback":
+        return "check_feedback"
+    elif intent == "send_reminder":
+        return "send_reminder"
+    elif intent == "send_exercise":
+        return "send_exercise"
+
+    # Fallback to state-based routing
+    if not session.get("last_exercise"):
+        return "send_exercise"
+    elif not session.get("feedback") and session.get("reminders_sent", 0) < 3:
+        return "send_reminder"
+    elif not session.get("feedback"):
+        return "check_feedback"
     
-    User ID: {user_id}
-    Current state:
-    - Last exercise sent: {session.get('last_exercise', 'None')}
-    - Feedback received: {session.get('feedback', 'None')}
-    - Reminders sent: {session.get('reminders_sent', 0)}
-    - Scheduled time: {session.get('scheduled_time', 'None')}
+    return "send_exercise"  # Default
+
+# Build the graph
+def build_graph():
+    graph = StateGraph(AgentState)
     
-    Based on this state, determine what action to take for this user.
-    """
+    # Add nodes
+    graph.add_node("send_exercise", send_exercise_node)
+    graph.add_node("send_reminder", send_reminder_node)
+    graph.add_node("check_feedback", check_feedback_node)
+    graph.add_node("schedule", schedule_node)
+    graph.add_node("answer_workout_question", answer_workout_question_node)
+    graph.add_node("finalize", finalize_node)
     
-    try:
-        # Let the agent reason about what to do
-        response = agent.run(context)
-        return response
-    except Exception as e:
-        print(f"Agent error: {e}")
-        # Fallback logic
-        if not session.get("last_exercise"):
-            from tools import send_exercise_fn
-            return send_exercise_fn(user_id)
-        elif not session.get("feedback"):
-            reminders = session.get("reminders_sent", 0)
-            if reminders < 3:
-                from tools import send_reminder_fn
-                return send_reminder_fn(user_id)
-            else:
-                return "I'm still waiting for your feedback on the exercise. Please let me know when you're done!"
-        else:
-            return f"Thanks for completing your exercise! Your feedback: '{session.get('feedback')}'"
+    # Add conditional edges
+    graph.add_conditional_edges(
+        "send_exercise", route_to_node, 
+        {
+            "send_exercise": "send_exercise",
+            "send_reminder": "send_reminder",
+            "check_feedback": "check_feedback",
+            "schedule": "schedule",
+            "answer_workout_question": "answer_workout_question",
+            END: END
+        }
+    )
+    graph.add_conditional_edges(
+        "send_reminder", route_to_node, 
+        {
+            "send_exercise": "send_exercise",
+            "send_reminder": "send_reminder",
+            "check_feedback": "check_feedback",
+            "schedule": "schedule",
+            "answer_workout_question": "answer_workout_question",
+            END: END
+        }
+    )
+    graph.add_conditional_edges(
+        "check_feedback", route_to_node, 
+        {
+            "send_exercise": "send_exercise",
+            "send_reminder": "send_reminder",
+            "check_feedback": "check_feedback",
+            "schedule": "schedule",
+            "answer_workout_question": "answer_workout_question",
+            END: END
+        }
+    )
+    graph.add_conditional_edges(
+        "schedule", route_to_node, 
+        {
+            "send_exercise": "send_exercise",
+            "send_reminder": "send_reminder",
+            "check_feedback": "check_feedback",
+            "schedule": "schedule",
+            "answer_workout_question": "answer_workout_question",
+            END: END
+        }
+    )
+    graph.add_conditional_edges(
+        "answer_workout_question", route_to_node, 
+        {
+            "send_exercise": "send_exercise",
+            "send_reminder": "send_reminder",
+            "check_feedback": "check_feedback",
+            "schedule": "schedule",
+            "answer_workout_question": "answer_workout_question",
+            END: END
+        }
+    )
+    
+    # Always finalize
+    graph.add_edge("send_exercise", "finalize")
+    graph.add_edge("send_reminder", "finalize")
+    graph.add_edge("check_feedback", "finalize")
+    graph.add_edge("schedule", "finalize")
+    graph.add_edge("answer_workout_question", "finalize")
+    
+    # Set entry and finish points
+    graph.set_entry_point("send_exercise")
+    graph.set_finish_point("finalize")
+    
+    return graph.compile()
+
+# Main execution function
+def run_agent(state: AgentState) -> str:
+    """Run the agent with the given state."""
+    graph = build_graph()
+    result = graph.invoke(state)
+    return result["output"]

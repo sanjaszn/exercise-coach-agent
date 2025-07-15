@@ -18,4 +18,4 @@ class StatusResponse(BaseModel):
     last_exercise: Optional[str]
     feedback: Optional[str]
     reminders_sent: int
-    status: str 
+    status: str
