@@ -1,122 +1,55 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.date import DateTrigger
-from app.agent import run_agent_session
 from app.memory import memory_store
-import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 scheduler = BackgroundScheduler()
-scheduler.start()
 
-job_refs = {}
-reminder_jobs = {}
-lock = threading.Lock()
+# Single user ID - could be from env or config
+SINGLE_USER_ID = "user123"
 
-def schedule_user_job(user_id: str, time_str: str):
-    """Schedule daily exercise for user."""
-    hour, minute = map(int, time_str.split(":"))
+def hourly_agent_run():
+    """Run agent for the single user every hour."""
+    print(f"Running hourly check at {datetime.now()}")
     
-    def exercise_job():
-        print(f"Running scheduled exercise for user {user_id}")
-        response = run_agent_session(user_id)
-        print(f"Exercise response: {response}")
-        
-        # Schedule reminder jobs if exercise was sent
-        session = memory_store.get(user_id)
-        if session.get("last_exercise") and not session.get("feedback"):
-            schedule_reminder_jobs(user_id)
+    # Import here to avoid circular imports
+    from app.agent import run_agent, AgentState
     
-    with lock:
-        # Cancel existing jobs
-        if user_id in job_refs:
-            job_refs[user_id].remove()
-        
-        # Schedule new exercise job
-        job_refs[user_id] = scheduler.add_job(
-            exercise_job,
-            CronTrigger(hour=hour, minute=minute),
-            id=f"exercise_{user_id}",
-            replace_existing=True
+    try:
+        print(f"Checking user {SINGLE_USER_ID}")
+        state = AgentState(
+            input="",
+            user_id=SINGLE_USER_ID,
+            coach_id="coach123", 
+            node_output="",
+            output=""
         )
-    
-    memory_store.update(user_id, {"scheduled_time": time_str})
+        result = run_agent(state)
+        print(f"Result: {result}")
+    except Exception as e:
+        print(f"Error: {e}")
 
-def schedule_reminder_jobs(user_id: str):
-    """Schedule automatic reminders for user."""
-    def create_reminder_job(reminder_num):
-        def reminder_job():
-            session = memory_store.get(user_id)
-            if session.get("feedback"):
-                # User already provided feedback, cancel remaining reminders
-                cancel_reminder_jobs(user_id)
-                return
-            
-            reminders_sent = session.get("reminders_sent", 0)
-            if reminders_sent >= 3:
-                print(f"Maximum reminders sent for user {user_id}")
-                cancel_reminder_jobs(user_id)
-                return
-            
-            print(f"Sending reminder {reminders_sent + 1} to user {user_id}")
-            response = run_agent_session(user_id)
-            print(f"Reminder response: {response}")
-        
-        return reminder_job
-    
-    with lock:
-        # Cancel existing reminder jobs
-        cancel_reminder_jobs(user_id)
-        
-        # Schedule 3 reminders: after 2 hours, 4 hours, and 6 hours
-        reminder_times = [2, 4, 6]  # hours after exercise
-        reminder_jobs[user_id] = []
-        
-        for i, hours in enumerate(reminder_times):
-            run_time = datetime.now() + timedelta(hours=hours)
-            job = scheduler.add_job(
-                create_reminder_job(i + 1),
-                DateTrigger(run_date=run_time),  # Use DateTrigger for one-time execution
-                id=f"reminder_{user_id}_{i}",
-                replace_existing=True
-            )
-            reminder_jobs[user_id].append(job)
-            print(f"Scheduled reminder {i + 1} for user {user_id} at {run_time}")
+def start_scheduler():
+    """Start the hourly scheduler."""
+    scheduler.add_job(
+        hourly_agent_run,
+        'interval',
+        hours=1,
+        id='hourly_agent'
+    )
+    scheduler.start()
+    print("Scheduler started - agent will run every hour for single user")
 
-def cancel_reminder_jobs(user_id: str):
-    """Cancel all reminder jobs for user."""
-    with lock:
-        if user_id in reminder_jobs:
-            for job in reminder_jobs[user_id]:
-                try:
-                    job.remove()
-                except:
-                    pass  # Job might already be removed
-            del reminder_jobs[user_id]
-            print(f"Cancelled all reminder jobs for user {user_id}")
+def set_user_schedule(time_str: str):
+    """Set schedule for the single user."""
+    hour, minute = map(int, time_str.split(":"))
+    memory_store.update(SINGLE_USER_ID, {
+        "scheduled_hour": hour,
+        "scheduled_minute": minute,
+        "scheduled_time": time_str
+    })
+    print(f"User scheduled for {time_str}")
 
-def cancel_user_job(user_id: str):
-    """Cancel all jobs for user."""
-    with lock:
-        if user_id in job_refs:
-            job_refs[user_id].remove()
-            del job_refs[user_id]
-    
-    cancel_reminder_jobs(user_id)
-    memory_store.update(user_id, {"scheduled_time": None})
-
-def run_now(user_id: str):
-    """Run agent session immediately."""
-    response = run_agent_session(user_id)
-    
-    # If exercise was sent, schedule reminders
-    session = memory_store.get(user_id)
-    if session.get("last_exercise") and not session.get("feedback"):
-        schedule_reminder_jobs(user_id)
-    
-    return response
-
-def handle_feedback_received(user_id: str):
-    """Call this when feedback is received to cancel reminders."""
-    cancel_reminder_jobs(user_id)
-    print(f"Feedback received for user {user_id}, cancelled remaining reminders")
+def schedule_session_fn(user_id: str, time_str: str) -> str:
+    """Schedule a workout session (used by agent)."""
+    set_user_schedule(time_str)
+    return f"Scheduled for {time_str} daily"
