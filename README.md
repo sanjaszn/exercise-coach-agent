@@ -50,7 +50,7 @@ Handles automatic hourly agent execution.
 - `schedule_session_fn(user_id, time_str)` - Agent-callable scheduling function
 
 ### `app/agent.py` - LangGraph Agent
-Your teammate's LangGraph implementation.
+LangGraph implementation.
 - `send_exercise_node(state)` - LangGraph node to send exercise
 - `send_reminder_node(state)` - LangGraph node to send reminders
 - `check_feedback_node(state)` - LangGraph node to handle feedback
