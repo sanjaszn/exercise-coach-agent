@@ -62,12 +62,10 @@ Handles automatic hourly agent execution.
 
 ### `app/main.py` - API Server
 FastAPI endpoints for user interaction.
-- `schedule_exercise(time)` - POST `/schedule` - Set exercise time
-- `submit_feedback(feedback)` - POST `/feedback` - Submit exercise feedback
-- `get_status()` - GET `/status` - Get current exercise status
-- `test_now()` - POST `/test-now` - Manually trigger agent
-- `reset_session()` - POST `/reset` - Clear user data
-- `root()` - GET `/` - Health check
+- POST `/chat` -  Send any message to your exercise coach (natural language)
+- GET `/status` - Get current exercise status
+- POST `/reset` - Clear user data
+- GET `/` - Health check
 
 ## Configuration Files
 
