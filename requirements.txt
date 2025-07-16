@@ -6,3 +6,4 @@ langgraph
 apscheduler
 python-dotenv
 pytest
+chromadb
