@@ -5,10 +5,15 @@ from app.routing import route_input
 from app.tools import send_exercise_fn, send_reminder_fn, check_feedback_fn
 from app.scheduler import schedule_session_fn
 from app.memory import memory_store
+from app.coach import fetch_coach_instructions, parse_coach_prompt
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-import requests
+import logging
+
+# Set up logging for debugging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Load .env
 load_dotenv()
@@ -29,49 +34,6 @@ class AgentState(TypedDict):
     coach_id: str
     node_output: str  # Intermediate output from nodes
     output: str       # Final output after finalize
-
-def fetch_coach_instructions(user_id: str, coach_id: str) -> dict:
-    """Fetch coach instructions from API and cache them."""
-    session = memory_store.get(user_id) or {}
-    last_fetched = session.get("last_instruction_fetch")
-    now = datetime.now()
-    
-    # Fetch only if not fetched in the last hour
-    if not last_fetched or (now - datetime.fromisoformat(last_fetched)).total_seconds() > 3600:
-        try:
-            response = requests.get(
-                f"https://api.myagents.ai/coach-commands?user_id={user_id}&coach_id={coach_id}",
-                headers={"Authorization": f"Bearer {os.getenv('API_TOKEN')}"}
-            )
-            response.raise_for_status()
-            instruction = response.json()
-            memory_store.update(user_id, {
-                "coach_instruction": instruction,
-                "last_instruction_fetch": now.isoformat()
-            })
-            return instruction
-        except requests.RequestException:
-            # Fallback to cached instruction or default
-            return session.get("coach_instruction", {"prompt": "Motivate the user to stay consistent."})
-    return session.get("coach_instruction", {"prompt": "Motivate the user to stay consistent."})
-
-def parse_coach_prompt(prompt: str) -> dict:
-    """Parse coach prompt to extract intent and details."""
-    prompt = prompt.lower()
-    result = {
-        "motivation_type": "general",  # Default
-        "include_goals": False,
-        "warning_tone": False
-    }
-    
-    if "goal" in prompt:
-        result["motivation_type"] = "goal_reminder"
-        result["include_goals"] = True
-    if "warn" in prompt or "lack of exercise" in prompt:
-        result["motivation_type"] = "warning"
-        result["warning_tone"] = True
-    
-    return result
 
 def send_exercise_node(state: AgentState) -> dict:
     """Send a new exercise to the user, tailored by coach instructions."""
@@ -159,43 +121,62 @@ def finalize_node(state: AgentState) -> dict:
 
 def route_to_node(state: AgentState) -> str:
     """Route input to appropriate node, considering coach instructions."""
+    logger.debug(f"Routing state: {state}")
     if state.get("output"):
+        logger.debug("Output exists, returning END")
         return END
     
     user_id = state["user_id"]
     coach_id = state["coach_id"]
     session = memory_store.get(user_id) or {}
     user_input = state["input"].lower()
+    logger.debug(f"Session: {session}")
     
     # Fetch coach instructions to influence routing
     instruction = fetch_coach_instructions(user_id, coach_id)
     parsed_instruction = parse_coach_prompt(instruction.get("prompt", ""))
+    logger.debug(f"Parsed instruction: {parsed_instruction}")
     
     # Route based on input intent first
     intent = route_input(user_input, user_id)  # From routing.py
+    logger.debug(f"Intent: {intent}")
     if intent == "schedule":
+        logger.debug("Routing to schedule")
         return "schedule"
     elif intent == "question":
+        logger.debug("Routing to answer_workout_question")
         return "answer_workout_question"
     elif intent == "check_feedback":
+        logger.debug("Routing to check_feedback")
         return "check_feedback"
     elif intent == "send_reminder":
+        logger.debug("Routing to send_reminder")
         return "send_reminder"
     elif intent == "send_exercise":
+        logger.debug("Routing to send_exercise")
         return "send_exercise"
     
     # Fallback to state-based routing, influenced by coach instructions
     if not session.get("last_exercise"):
+        logger.debug("No last_exercise, routing to send_exercise")
         return "send_exercise"
-    if not session.get("feedback") and session.get("reminders_sent", 0) < 3:
-        if parsed_instruction["warning_tone"] and session.get("last_exercise_date"):
-            days_since = (datetime.now().date() - datetime.fromisoformat(session["last_exercise_date"]).date()).days
-            if days_since >= 3:
-                return "send_reminder"  # Prioritize reminder for inactivity with warning
-        return "send_reminder"  # Send reminder if feedback missing and reminders not maxed
     if not session.get("feedback"):
-        return "check_feedback"  # Check feedback if max reminders sent or no warning
+        if session.get("reminders_sent", 0) < 3 and parsed_instruction["warning_tone"] and session.get("last_exercise_date"):
+            try:
+                days_since = (datetime.now().date() - datetime.fromisoformat(session["last_exercise_date"]).date()).days
+                logger.debug(f"Days since: {days_since}, Warning tone: {parsed_instruction['warning_tone']}, Reminders sent: {session.get('reminders_sent', 0)}")
+                if days_since >= 3:
+                    logger.debug("Routing to send_reminder due to warning and inactivity")
+                    return "send_reminder"
+            except ValueError as e:
+                logger.debug(f"Date parsing error: {e}")
+        if session.get("reminders_sent", 0) < 3:
+            logger.debug("Routing to send_reminder due to no feedback and reminders < 3")
+            return "send_reminder"
+        logger.debug("Routing to check_feedback due to max reminders or no warning")
+        return "check_feedback"
     
+    logger.debug("Default routing to send_exercise")
     return "send_exercise"  # Default
 
 # Build the graph

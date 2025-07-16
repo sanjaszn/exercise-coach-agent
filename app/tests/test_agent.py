@@ -3,10 +3,16 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.memory import memory_store
 from app.scheduler import SINGLE_USER_ID
-from app.agent import fetch_coach_instructions, parse_coach_prompt, send_exercise_node, send_reminder_node
+from app.agent import send_exercise_node, send_reminder_node
+from app.coach import fetch_coach_instructions, parse_coach_prompt
 from datetime import datetime, timedelta
 from unittest.mock import patch
-import requests  # Added import
+import requests
+import logging
+
+# Set up logging capture
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 client = TestClient(app)
 
@@ -20,7 +26,7 @@ def clear_memory():
 @pytest.fixture
 def mock_coach_api():
     """Mock the coach commands API response."""
-    with patch("requests.get") as mock_get:
+    with patch("app.coach.requests.get") as mock_get:  # Updated patch path
         yield mock_get
 
 def test_health_check():
@@ -384,14 +390,16 @@ def test_send_reminder_node_with_coach_instructions(mock_coach_api):
     assert "run a marathon" in message
     assert "3 days" in message
 
-def test_route_to_node_with_warning(mock_coach_api):
+def test_route_to_node_with_warning(mock_coach_api, caplog):
     """Test route_to_node prioritizes reminders for inactivity with warning prompt."""
+    caplog.set_level(logging.DEBUG)  # Capture debug logs
     # Set up user context with inactivity
     memory_store.update(SINGLE_USER_ID, {
         "last_exercise": "Do 10 push-ups",
         "last_exercise_date": (datetime.now().date() - timedelta(days=4)).isoformat(),
         "feedback": None,
-        "reminders_sent": 0
+        "reminders_sent": 0,
+        "exercise_sent_at": (datetime.now() - timedelta(hours=2)).isoformat()  # Add exercise_sent_at
     })
     
     # Mock coach instruction
@@ -404,6 +412,10 @@ def test_route_to_node_with_warning(mock_coach_api):
         "timestamp": "2025-07-16T10:00:00Z"
     }
     
+    # Verify mock is called and returns correct prompt
+    instruction = fetch_coach_instructions(SINGLE_USER_ID, "coach_001")
+    assert instruction["prompt"] == "Warn about lack of exercise."
+    
     # Run routing
     from app.agent import route_to_node
     state = {
@@ -414,4 +426,5 @@ def test_route_to_node_with_warning(mock_coach_api):
         "output": ""
     }
     result = route_to_node(state)
+    print(caplog.text)  # Print logs for debugging
     assert result == "send_reminder"
