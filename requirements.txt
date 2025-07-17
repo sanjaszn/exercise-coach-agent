@@ -6,3 +6,5 @@ langgraph
 apscheduler
 python-dotenv
 pytest
+pytest-timeout
+chromadb
