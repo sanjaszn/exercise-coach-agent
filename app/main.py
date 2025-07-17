@@ -1,78 +1,102 @@
-from fastapi import FastAPI, HTTPException
-from models import ScheduleRequest, RunNowRequest, FeedbackRequest, StatusResponse
-from scheduler import schedule_user_job, cancel_user_job, run_now, handle_feedback_received
-from memory import memory_store
-from agent_runner import run_agent_session
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from app.scheduler import start_scheduler, SINGLE_USER_ID
+from app.memory import memory_store
+from app.agent import run_agent, AgentState
+from contextlib import asynccontextmanager
+from datetime import datetime
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
 
-@app.post("/schedule")
-def schedule_exercise(req: ScheduleRequest):
-    """Schedule daily exercise for a user."""
-    schedule_user_job(req.user_id, req.time)
-    return {"message": f"Exercise scheduled for {req.time} for user {req.user_id}."}
+app = FastAPI(title="Exercise Coach Agent", version="1.0.0", lifespan=lifespan)
 
-@app.post("/run-now")
-def run_now_endpoint(req: RunNowRequest):
-    """Run agent session immediately for a user."""
-    response = run_now(req.user_id)
-    return {"message": response}
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.post("/feedback")
-def submit_feedback(req: FeedbackRequest):
-    """Submit feedback for completed exercise."""
-    session = memory_store.get(req.user_id)
-    if not session.get("last_exercise"):
-        raise HTTPException(status_code=400, detail="No exercise sent yet.")
-    
-    # Update memory with feedback
-    memory_store.update(req.user_id, {"feedback": req.feedback})
-    
-    # Cancel any pending reminders
-    handle_feedback_received(req.user_id)
-    
-    # Get agent response
-    response = run_agent_session(req.user_id)
-    return {"message": response}
+class ChatMessage(BaseModel):
+    message: str
 
-@app.get("/status", response_model=StatusResponse)
-def get_status(user_id: str):
-    """Get current status of user's exercise session."""
-    session = memory_store.get(user_id)
+class CoachMessage(BaseModel):
+    user_id: str
+    prompt: str
+
+# main chat endpoint
+@app.post("/chat")
+def chat_with_agent(chat: ChatMessage):
+    """Take input, run agent."""
+    state = AgentState(
+        input=chat.message,
+        user_id=SINGLE_USER_ID,
+        coach_id="coach123",
+        node_output="", 
+        output=""
+    )
+    result = run_agent(state)
+    return {"response": result}
+
+# coach endpoints
+@app.get("/coach-commands")
+def get_coach_commands(user_id: str, coach_id: str):
+    """Get coach instructions from ChromaDB."""
+    user_data = memory_store.get(user_id)
+    instruction = user_data.get("coach_instruction", {
+        "instruction_id": "default_123",
+        "coach_id": coach_id,
+        "user_id": user_id,
+        "prompt": "Motivate the user to stay consistent.",
+        "timestamp": datetime.now().isoformat()
+    })
+    return instruction
+
+@app.post("/coach/chat")
+def coach_chat(message: CoachMessage):
+    """Coach sends instruction to user."""
+    instruction = {
+        "instruction_id": f"coach_{datetime.now().timestamp()}",
+        "coach_id": "coach_001", 
+        "user_id": message.user_id,
+        "prompt": message.prompt,
+        "timestamp": datetime.now().isoformat()
+    }
+    memory_store.update(message.user_id, {"coach_instruction": instruction})
+    return {"status": "instruction sent", "instruction": instruction}
+
+@app.get("/status")
+def get_status():
+    session = memory_store.get(SINGLE_USER_ID)
     if not session:
-        raise HTTPException(status_code=404, detail="User session not found.")
+        return {"status": "not_scheduled"}
     
-    # Determine status
     if not session.get("last_exercise"):
-        status = "no exercise"
+        status = "scheduled"
     elif not session.get("feedback"):
-        status = "waiting for feedback"
+        status = "waiting_feedback" 
     else:
         status = "completed"
     
-    return StatusResponse(
-        user_id=user_id,
-        scheduled_time=session.get("scheduled_time"),
-        last_exercise=session.get("last_exercise"),
-        feedback=session.get("feedback"),
-        reminders_sent=session.get("reminders_sent", 0),
-        status=status
-    )
-
-@app.delete("/schedule")
-def delete_schedule(user_id: str):
-    """Cancel scheduled exercise for a user."""
-    cancel_user_job(user_id)
-    return {"message": f"Schedule cancelled for user {user_id}."}
+    return {
+        "status": status,
+        "scheduled_time": session.get("scheduled_time"),
+        "last_exercise": session.get("last_exercise"),
+        "feedback": session.get("feedback"),
+        "reminders_sent": session.get("reminders_sent", 0)
+    }
 
 @app.post("/reset")
-def reset_user_session(user_id: str):
-    """Reset user session (for testing/debugging)."""
-    memory_store.clear(user_id)
-    cancel_user_job(user_id)
-    return {"message": f"Session reset for user {user_id}."}
+def reset_session():
+    memory_store.clear(SINGLE_USER_ID)
+    return {"message": "Session reset"}
 
 @app.get("/")
 def root():
-    """Health check endpoint."""
-    return {"message": "Fitness Coach Agent API is running!"}
+    return {"message": "Exercise Coach Agent - Send messages to /chat"}
