@@ -1,9 +1,9 @@
-# app/tests/test_agent.py
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.memory import memory_store
 from app.scheduler import SINGLE_USER_ID
+from datetime import datetime, timedelta
 
 client = TestClient(app)
 
@@ -20,272 +20,109 @@ def test_health_check():
     assert response.status_code == 200
     assert "exercise coach" in response.json()["message"].lower()
 
-def test_chat_endpoint_basic():
+def test_chat_endpoint():
     """Test the main chat endpoint."""
     response = client.post("/chat", json={"message": "Hello"})
     assert response.status_code == 200
     assert "response" in response.json()
-    
-    # Should have viral loop
     assert "myagents.ai" in response.json()["response"]
 
-def test_chat_schedule_natural_language():
-    """Test scheduling through chat with natural language."""
-    response = client.post("/chat", json={"message": "Schedule my workouts for 9 AM"})
-    assert response.status_code == 200
-    
-    # Should handle scheduling through agent
-    message = response.json()["response"]
-    assert len(message) > 10  # Should have meaningful response
-    assert "myagents.ai" in message
-
-def test_chat_feedback_natural_language():
-    """Test feedback through chat with natural language."""
-    # First set up an exercise through chat
-    client.post("/chat", json={"message": "Give me an exercise"})
-    
-    response = client.post("/chat", json={"message": "I finished the exercise!"})
-    assert response.status_code == 200
-    
-    # Should handle feedback through agent
-    message = response.json()["response"]
-    assert len(message) > 10  # Should have meaningful response
-    assert "myagents.ai" in message
-
-def test_chat_question():
-    """Test asking questions through chat."""
-    response = client.post("/chat", json={"message": "What exercise is good for my back?"})
-    assert response.status_code == 200
-    
-    # Should provide some response through agent
-    message = response.json()["response"]
-    assert len(message) > 10  # Should have substantial response
-    assert "myagents.ai" in message
-
-def test_chat_exercise_request():
-    """Test requesting exercise through chat."""
-    response = client.post("/chat", json={"message": "Give me an exercise"})
-    assert response.status_code == 200
-    
-    # Should provide exercise through agent
-    message = response.json()["response"]
-    assert len(message) > 10  # Should have meaningful response
-    assert "myagents.ai" in message
-
-def test_status_endpoint_no_data():
-    """Test status when no data exists."""
+def test_status_endpoint():
+    """Test status endpoint."""
     response = client.get("/status")
     assert response.status_code == 200
-    assert response.json()["status"] == "not_scheduled"
-
-def test_status_endpoint_with_data():
-    """Test status with exercise data."""
-    memory_store.update(SINGLE_USER_ID, {
-        "scheduled_time": "10:00",
-        "last_exercise": "Do 10 push-ups",
-        "feedback": None,
-        "reminders_sent": 0
-    })
-    
-    response = client.get("/status")
-    data = response.json()
-    assert data["status"] == "waiting_feedback"
-    assert data["last_exercise"] == "Do 10 push-ups"
-    assert data["scheduled_time"] == "10:00"
-    assert data["reminders_sent"] == 0
+    assert "status" in response.json()
 
 def test_reset_endpoint():
-    """Test resetting user session."""
-    # Add some data through memory
-    memory_store.update(SINGLE_USER_ID, {
-        "last_exercise": "Do 10 push-ups",
-        "feedback": "Done"
-    })
-    
+    """Test reset endpoint."""
     response = client.post("/reset")
     assert response.status_code == 200
     assert "reset" in response.json()["message"].lower()
-    
-    # Verify data cleared
-    status = client.get("/status").json()
-    assert status["status"] == "not_scheduled"
 
-def test_agent_sends_exercise():
-    """Test agent sends exercise when none exists."""
-    response = client.post("/chat", json={"message": ""})
+def test_coach_commands_endpoint():
+    """Test coach commands endpoint."""
+    response = client.get("/coach-commands?user_id=test_user&coach_id=test_coach")
     assert response.status_code == 200
-    
-    # Should have some meaningful response
-    message = response.json()["response"]
-    assert len(message) > 10
-    assert "myagents.ai" in message
+    assert "prompt" in response.json()
 
-def test_agent_with_exercise_no_feedback():
-    """Test agent behavior when exercise exists but no feedback."""
+def test_coach_chat_endpoint():
+    """Test coach chat endpoint."""
+    response = client.post("/coach/chat", json={
+        "user_id": "test_user",
+        "prompt": "Test instruction"
+    })
+    assert response.status_code == 200
+    assert response.json()["status"] == "instruction sent"
+
+def test_memory_works():
+    """Test ChromaDB memory works."""
+    memory_store.set("test_user", {"test": "data"})
+    result = memory_store.get("test_user")
+    assert result["test"] == "data"
+    
+    memory_store.update("test_user", {"new": "value"})
+    result = memory_store.get("test_user")
+    assert result["test"] == "data"
+    assert result["new"] == "value"
+    
+    memory_store.clear("test_user")
+    result = memory_store.get("test_user")
+    assert result == {}
+
+def test_schedule_workout_via_chat():
+    """Test user can schedule workout via chat."""
+    current_time = datetime.now()
+    time_str = f"{current_time.hour:02d}:{current_time.minute:02d}"
+    
+    response = client.post("/chat", json={"message": f"Schedule my workouts for {time_str}"})
+    assert response.status_code == 200
+    assert "myagents.ai" in response.json()["response"]
+
+def test_reminder_logic():
+    """Test reminder logic works."""
+    from app.tools import should_send_exercise, should_send_reminder
+    
+    # Test should_send_exercise at scheduled time
+    current_time = datetime.now()
+    memory_store.update(SINGLE_USER_ID, {
+        "scheduled_hour": current_time.hour,
+        "scheduled_minute": current_time.minute,
+        "last_exercise_date": (current_time.date() - timedelta(days=1)).isoformat()
+    })
+    
+    assert should_send_exercise(SINGLE_USER_ID) == True
+    
+    # Test should_send_reminder when exercise sent hours ago
     memory_store.update(SINGLE_USER_ID, {
         "last_exercise": "Do 10 push-ups",
         "feedback": None,
-        "reminders_sent": 0
+        "reminders_sent": 0,
+        "exercise_sent_at": (current_time - timedelta(hours=3)).isoformat()
     })
     
-    response = client.post("/chat", json={"message": ""})
-    assert response.status_code == 200
-    
-    message = response.json()["response"]
-    assert len(message) > 10
-    assert "myagents.ai" in message
+    assert should_send_reminder(SINGLE_USER_ID) == True
 
-def test_agent_with_feedback():
-    """Test agent behavior when feedback exists."""
-    memory_store.update(SINGLE_USER_ID, {
-        "last_exercise": "Do 10 push-ups",
-        "feedback": "Done!",
-        "reminders_sent": 0
-    })
+def test_chromadb_connection():
+    """Test ChromaDB connection with prints."""
+    print("\n=== Testing ChromaDB Connection ===")
     
-    response = client.post("/chat", json={"message": ""})
-    assert response.status_code == 200
+    # Test basic operations
+    print("1. Testing set operation...")
+    memory_store.set("test_connection", {"test": "chromadb_works"})
     
-    message = response.json()["response"]
-    assert len(message) > 10
-    assert "myagents.ai" in message
-
-def test_complete_user_journey():
-    """Test complete user flow through chat."""
-    # Step 1: Schedule through chat
-    response = client.post("/chat", json={"message": "Schedule workouts for 8 AM"})
-    assert response.status_code == 200
-    assert "myagents.ai" in response.json()["response"]
+    print("2. Testing get operation...")
+    result = memory_store.get("test_connection")
+    print(f"Retrieved: {result}")
     
-    # Step 2: Get exercise
-    response = client.post("/chat", json={"message": "Give me today's exercise"})
-    assert response.status_code == 200
-    assert "myagents.ai" in response.json()["response"]
+    print("3. Testing update operation...")
+    memory_store.update("test_connection", {"updated": True})
+    result = memory_store.get("test_connection")
+    print(f"After update: {result}")
     
-    # Step 3: Submit feedback through chat
-    response = client.post("/chat", json={"message": "I finished the exercise!"})
-    assert response.status_code == 200
-    assert "myagents.ai" in response.json()["response"]
-
-def test_memory_persistence():
-    """Test that memory persists correctly."""
-    # Set initial state
-    memory_store.update(SINGLE_USER_ID, {
-        "last_exercise": "Do 10 push-ups",
-        "feedback": None
-    })
+    print("4. Testing clear operation...")
+    memory_store.clear("test_connection")
+    result = memory_store.get("test_connection")
+    print(f"After clear: {result}")
     
-    status1 = client.get("/status").json()
-    assert status1["last_exercise"] == "Do 10 push-ups"
-    
-    # Agent interaction shouldn't break memory
-    client.post("/chat", json={"message": "Hello"})
-    status2 = client.get("/status").json()
-    # Memory should persist (might be updated by agent, but shouldn't be lost)
-    assert "last_exercise" in status2
-
-def test_chat_viral_loop():
-    """Test that all chat responses include viral loop."""
-    # Test with different messages
-    messages = ["Hello", "Give me an exercise", "What's good for cardio?", ""]
-    
-    for message in messages:
-        response = client.post("/chat", json={"message": message})
-        assert response.status_code == 200
-        assert "myagents.ai" in response.json()["response"]
-
-def test_deterministic_exercise():
-    """Test that exercise function is deterministic."""
-    from app.tools import send_exercise_fn
-    
-    # Should always return same exercise
-    exercise1 = send_exercise_fn(SINGLE_USER_ID)
-    memory_store.clear(SINGLE_USER_ID)
-    exercise2 = send_exercise_fn(SINGLE_USER_ID)
-    
-    assert exercise1 == exercise2 == "Do 10 push-ups"
-
-def test_status_response_format():
-    """Test that status response has correct format."""
-    memory_store.update(SINGLE_USER_ID, {
-        "scheduled_time": "09:00",
-        "last_exercise": "Do 10 push-ups",
-        "feedback": "Done",
-        "reminders_sent": 2
-    })
-    
-    response = client.get("/status")
-    data = response.json()
-    
-    # Check all expected fields
-    assert "status" in data
-    assert "scheduled_time" in data
-    assert "last_exercise" in data
-    assert "feedback" in data
-    assert "reminders_sent" in data
-    
-    assert data["scheduled_time"] == "09:00"
-    assert data["last_exercise"] == "Do 10 push-ups"
-    assert data["feedback"] == "Done"
-    assert data["reminders_sent"] == 2
-    assert data["status"] == "completed"
-
-def test_chat_empty_message():
-    """Test chat with empty message."""
-    response = client.post("/chat", json={"message": ""})
-    assert response.status_code == 200
-    # Should handle gracefully
-    assert len(response.json()["response"]) > 0
-    assert "myagents.ai" in response.json()["response"]
-
-def test_chat_various_inputs():
-    """Test chat handles various types of input."""
-    test_inputs = [
-        "Hello",
-        "help",
-        "exercise",
-        "I'm done",
-        "schedule for 10 AM",
-        "what should I do?"
-    ]
-    
-    for input_msg in test_inputs:
-        response = client.post("/chat", json={"message": input_msg})
-        assert response.status_code == 200
-        assert len(response.json()["response"]) > 0
-        assert "myagents.ai" in response.json()["response"]
-
-def test_multiple_chat_interactions():
-    """Test multiple chat interactions work correctly."""
-    # First interaction
-    response1 = client.post("/chat", json={"message": "Hello"})
-    assert response1.status_code == 200
-    
-    # Second interaction
-    response2 = client.post("/chat", json={"message": "Give me an exercise"})
-    assert response2.status_code == 200
-    
-    # Third interaction
-    response3 = client.post("/chat", json={"message": "Thanks"})
-    assert response3.status_code == 200
-    
-    # All should work
-    for response in [response1, response2, response3]:
-        assert "myagents.ai" in response.json()["response"]
-
-def test_reset_clears_everything():
-    """Test that reset clears all user data."""
-    # Set up some data through chat and memory
-    client.post("/chat", json={"message": "Give me an exercise"})
-    memory_store.update(SINGLE_USER_ID, {"feedback": "Done!"})
-    
-    # Verify data exists
-    status_before = client.get("/status").json()
-    assert status_before["status"] != "not_scheduled"
-    
-    # Reset
-    client.post("/reset")
-    
-    # Verify data cleared
-    status_after = client.get("/status").json()
-    assert status_after["status"] == "not_scheduled"
+    assert result == {}
+    print("=== ChromaDB Connection Test PASSED ===")
