@@ -1,28 +1,39 @@
-import threading
+import chromadb
 from typing import Dict, Any
+import json
 
 class MemoryStore:
     def __init__(self):
-        self._store: Dict[str, Dict[str, Any]] = {}
-        self._lock = threading.Lock()
+        self.client = chromadb.Client()
+        self.collection = self.client.get_or_create_collection("user_data")
 
     def get(self, user_id: str) -> Dict[str, Any]:
-        with self._lock:
-            return self._store.get(user_id, {}).copy()
+        try:
+            results = self.collection.get(ids=[user_id])
+            if results['documents'] and results['documents'][0]:
+                return json.loads(results['documents'][0])
+            return {}
+        except:
+            return {}
 
     def set(self, user_id: str, data: Dict[str, Any]):
-        with self._lock:
-            self._store[user_id] = data.copy()
+        try:
+            self.collection.upsert(
+                ids=[user_id],
+                documents=[json.dumps(data)]
+            )
+        except:
+            pass
 
     def update(self, user_id: str, data: Dict[str, Any]):
-        with self._lock:
-            if user_id not in self._store:
-                self._store[user_id] = {}
-            self._store[user_id].update(data)
+        existing = self.get(user_id)
+        existing.update(data)
+        self.set(user_id, existing)
 
     def clear(self, user_id: str):
-        with self._lock:
-            if user_id in self._store:
-                del self._store[user_id]
+        try:
+            self.collection.delete(ids=[user_id])
+        except:
+            pass
 
 memory_store = MemoryStore()
