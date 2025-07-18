@@ -39,7 +39,7 @@ async def options_coach_chat():
     return JSONResponse(
         status_code=200,
         headers={
-            "Access-Control-Allow-Origin": "http://localhost:3000,https://0174a2412b84.ngrok-free.app",
+            "Access-Control-Allow-Origin": "http://localhost:3000,https://a2a9e8dc5319.ngrok-free.app",
             "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type,Authorization,Accept,X-Requested-With",
             "Access-Control-Max-Age": "3600",

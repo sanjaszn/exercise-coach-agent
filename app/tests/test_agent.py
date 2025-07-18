@@ -74,10 +74,13 @@ def test_schedule_workout_via_chat():
     """Test user can schedule workout via chat."""
     current_time = datetime.now()
     time_str = f"{current_time.hour:02d}:{current_time.minute:02d}"
-    
-    response = client.post("/chat", json={"message": f"Schedule my workouts for {time_str}"})
+    response = client.post("/chat", json={"message": f"Schedule my workout for {time_str}"})
     assert response.status_code == 200
+    assert time_str in response.json()["response"]  # Check if scheduled time is in response
     assert "myagents.ai" in response.json()["response"]
+    # Verify stored schedule
+    session = memory_store.get(SINGLE_USER_ID)
+    assert session.get("scheduled_time") == time_str
 
 def test_reminder_logic():
     """Test reminder logic works."""

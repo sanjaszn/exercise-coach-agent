@@ -11,11 +11,14 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import logging
 import re
+
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 # Load .env
 load_dotenv()
+
 # Initialize DeepSeek LLM with timeout
 llm = ChatOpenAI(
     model="deepseek/deepseek-chat-v3-0324:free",
@@ -25,6 +28,7 @@ llm = ChatOpenAI(
     max_tokens=1000,
     timeout=30,
 )
+
 # Define AgentState
 class AgentState(TypedDict):
     input: str
@@ -32,6 +36,7 @@ class AgentState(TypedDict):
     coach_id: str
     node_output: str
     output: str
+
 def send_exercise_node(state: AgentState) -> dict:
     """Send a new exercise to the user, tailored by coach instructions."""
     user_id = state["user_id"]
@@ -57,6 +62,7 @@ def send_exercise_node(state: AgentState) -> dict:
     except Exception as e:
         logger.error(f"send_exercise_node error: {str(e)}")
         return {"node_output": f"Error sending exercise: {str(e)}"}
+
 def send_reminder_node(state: AgentState) -> dict:
     """Send a reminder if feedback is missing, tailored by coach instructions."""
     user_id = state["user_id"]
@@ -87,6 +93,7 @@ def send_reminder_node(state: AgentState) -> dict:
     except Exception as e:
         logger.error(f"send_reminder_node error: {str(e)}")
         return {"node_output": f"Error sending reminder: {str(e)}"}
+
 def check_feedback_node(state: AgentState) -> dict:
     """Check user feedback and thank them."""
     user_id = state["user_id"]
@@ -101,31 +108,39 @@ def check_feedback_node(state: AgentState) -> dict:
     except Exception as e:
         logger.error(f"check_feedback_node error: {str(e)}")
         return {"node_output": f"Error checking feedback: {str(e)}"}
+
 def schedule_node(state: AgentState) -> dict:
     """Schedule a workout session."""
     user_id = state["user_id"]
     try:
         input_lower = state["input"].lower()
-        # Match time formats like "10:00", "10:00 am", "10:00pm", or "10:00 AM"
-        time_match = re.search(r'at\s+(\d{1,2}:\d{2}\s*(?:[ap]m)?)', input_lower, re.IGNORECASE)
+        # Match time formats like "10:00", "10:00 am", "10:00pm", or "at 10:00"
+        time_match = re.search(r'(?:\bat\s+)?(\d{1,2}:\d{2}\s*(?:[ap]m)?)', input_lower, re.IGNORECASE)
         time_str = time_match.group(1).strip() if time_match else "12:00"
-        # Validate time format
+        # Validate and parse time
         try:
             if "am" in time_str.lower() or "pm" in time_str.lower():
-                datetime.strptime(time_str, "%I:%M %p")
+                parsed_time = datetime.strptime(time_str, "%I:%M %p")
             else:
-                datetime.strptime(time_str, "%H:%M")
+                parsed_time = datetime.strptime(time_str, "%H:%M")
+            hour, minute = parsed_time.hour, parsed_time.minute
         except ValueError:
             logger.error(f"Invalid time format: {time_str}")
             time_str = "12:00"
+            hour, minute = 12, 0
         result = schedule_session_fn(user_id, time_str)
-        memory_store.update(user_id, {"scheduled_time": time_str})
+        memory_store.update(user_id, {
+            "scheduled_time": time_str,
+            "scheduled_hour": hour,
+            "scheduled_minute": minute
+        })
         message = f"Session scheduled for {time_str}: {result}"
         logger.debug(f"schedule_node: {message}")
         return {"node_output": message}
     except Exception as e:
         logger.error(f"schedule_node error: {str(e)}")
         return {"node_output": f"Error scheduling session: {str(e)}"}
+
 def answer_workout_question_node(state: AgentState) -> dict:
     """Answer workout-related questions using LLM."""
     user_id = state["user_id"]
@@ -137,6 +152,7 @@ def answer_workout_question_node(state: AgentState) -> dict:
     except Exception as e:
         logger.error(f"LLM error: {str(e)}")
         return {"node_output": f"Error answering question: {str(e)}"}
+
 def finalize_node(state: AgentState) -> dict:
     """Add viral loop and finalize response."""
     try:
@@ -148,6 +164,7 @@ def finalize_node(state: AgentState) -> dict:
     except Exception as e:
         logger.error(f"finalize_node error: {str(e)}")
         return {"output": f"Error finalizing response: {str(e)}"}
+
 def route_to_node(state: AgentState) -> str:
     """Route input to appropriate node, considering coach instructions."""
     logger.debug(f"Routing state: {state}")
@@ -208,6 +225,7 @@ def route_to_node(state: AgentState) -> str:
     except Exception as e:
         logger.error(f"route_to_node error: {str(e)}")
         return END
+
 def build_graph():
     try:
         graph = StateGraph(AgentState)
@@ -284,6 +302,7 @@ def build_graph():
     except Exception as e:
         logger.error(f"build_graph error: {str(e)}")
         raise
+
 def run_agent(state: AgentState) -> str:
     """Run the agent with the given state."""
     try:
