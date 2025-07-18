@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react"
 import axios from "axios"
 import "./App.css"
 
-const API_BASE_URL = "https://8f0a0663b166.ngrok-free.app";
+const API_BASE_URL = "https://0174a2412b84.ngrok-free.app";
 const USER_ID = "user123"
 
 function App() {
