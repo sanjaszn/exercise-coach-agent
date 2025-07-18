@@ -20,6 +20,7 @@ def test_health_check():
     assert response.status_code == 200
     assert "exercise coach" in response.json()["message"].lower()
 
+@pytest.mark.timeout(120)
 def test_chat_endpoint():
     """Test the main chat endpoint."""
     response = client.post("/chat", json={"message": "Hello"})
