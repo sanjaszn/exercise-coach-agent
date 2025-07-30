@@ -1,7 +1,7 @@
 from app.memory import memory_store
 from datetime import datetime, timedelta
 import random
-from app.coach import fetch_coach_instructions, parse_coach_prompt
+from app.agent_owner import fetch_agent_owner_instructions, parse_agent_owner_prompt
 
 EXERCISES = [
     "Do 10 push-ups",
@@ -42,8 +42,10 @@ def should_send_reminder(user_id: str) -> bool:
         return False
     
     # Check warning condition first
-    instruction = fetch_coach_instructions(user_id, "coach_001")  # Consistent coach_id
-    parsed_instruction = parse_coach_prompt(instruction.get("prompt", ""))
+    # Extract agent_owner_id from user_id format: "end_user_{agent_id}"
+    agent_owner_id = user_id.replace("end_user_", "") if user_id.startswith("end_user_") else "default"
+    instruction = fetch_agent_owner_instructions(user_id, agent_owner_id)
+    parsed_instruction = parse_agent_owner_prompt(instruction.get("prompt", ""))
     if parsed_instruction["warning_tone"] and session.get("last_exercise_date") and session.get("reminders_sent", 0) < 3:
         try:
             days_since = (datetime.now().date() - datetime.fromisoformat(session["last_exercise_date"]).date()).days
@@ -106,5 +108,5 @@ def check_feedback_fn(user_id: str) -> str:
 def schedule_session_fn(user_id: str, time_str: str) -> str:
     """Schedule a workout session."""
     from app.scheduler import set_user_schedule
-    set_user_schedule(time_str)
+    set_user_schedule(user_id, time_str)
     return f"Scheduled for {time_str} daily"

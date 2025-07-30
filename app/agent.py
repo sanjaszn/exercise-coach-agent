@@ -5,7 +5,7 @@ from app.routing import route_input
 from app.tools import send_exercise_fn, send_reminder_fn, check_feedback_fn
 from app.scheduler import schedule_session_fn
 from app.memory import memory_store
-from app.coach import fetch_coach_instructions, parse_coach_prompt
+from app.agent_owner import fetch_agent_owner_instructions, parse_agent_owner_prompt
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -33,17 +33,17 @@ llm = ChatOpenAI(
 class AgentState(TypedDict):
     input: str
     user_id: str
-    coach_id: str
+    agent_owner_id: str
     node_output: str
     output: str
 
 def send_exercise_node(state: AgentState) -> dict:
-    """Send a new exercise to the user, tailored by coach instructions."""
+    """Send a new exercise to the user, tailored by agent owner instructions."""
     user_id = state["user_id"]
-    coach_id = state["coach_id"]
+    agent_owner_id = state["agent_owner_id"]
     
-    instruction = fetch_coach_instructions(user_id, coach_id)
-    parsed_instruction = parse_coach_prompt(instruction.get("prompt", ""))
+    instruction = fetch_agent_owner_instructions(user_id, agent_owner_id)
+    parsed_instruction = parse_agent_owner_prompt(instruction.get("prompt", ""))
     
     session = memory_store.get(user_id) or {}
     user_goals = session.get("goals", "your fitness goals")
@@ -64,14 +64,14 @@ def send_exercise_node(state: AgentState) -> dict:
         return {"node_output": f"Error sending exercise: {str(e)}"}
 
 def send_reminder_node(state: AgentState) -> dict:
-    """Send a reminder if feedback is missing, tailored by coach instructions."""
+    """Send a reminder if feedback is missing, tailored by agent owner instructions."""
     user_id = state["user_id"]
-    coach_id = state["coach_id"]
+    agent_owner_id = state["agent_owner_id"]
     session = memory_store.get(user_id) or {}
     reminders = session.get("reminders_sent", 0)
     
-    instruction = fetch_coach_instructions(user_id, coach_id)
-    parsed_instruction = parse_coach_prompt(instruction.get("prompt", ""))
+    instruction = fetch_agent_owner_instructions(user_id, agent_owner_id)
+    parsed_instruction = parse_agent_owner_prompt(instruction.get("prompt", ""))
     
     user_goals = session.get("goals", "your fitness goals")
     last_exercise_date = session.get("last_exercise_date")
@@ -157,8 +157,8 @@ def finalize_node(state: AgentState) -> dict:
     """Add viral loop and finalize response."""
     try:
         node_output = state.get("node_output", "")
-        coach_id = state["coach_id"]
-        viral_text = f"\nPowered by MyAgentsAI: https://myagents.ai/signup?ref={coach_id}"
+        agent_owner_id = state["agent_owner_id"]
+        viral_text = f"\nPowered by MyAgentsAI: https://myagents.ai/signup?ref={agent_owner_id}"
         logger.debug(f"finalize_node: {node_output}{viral_text}")
         return {"output": f"{node_output}{viral_text}"}
     except Exception as e:
@@ -166,7 +166,7 @@ def finalize_node(state: AgentState) -> dict:
         return {"output": f"Error finalizing response: {str(e)}"}
 
 def route_to_node(state: AgentState) -> str:
-    """Route input to appropriate node, considering coach instructions."""
+    """Route input to appropriate node, considering agent owner instructions and guardrails."""
     logger.debug(f"Routing state: {state}")
     try:
         if state.get("output"):
@@ -174,13 +174,32 @@ def route_to_node(state: AgentState) -> str:
             return END
         
         user_id = state["user_id"]
-        coach_id = state["coach_id"]
+        agent_owner_id = state["agent_owner_id"]
         session = memory_store.get(user_id) or {}
         user_input = state["input"].lower()
         logger.debug(f"Session: {session}")
         
-        instruction = fetch_coach_instructions(user_id, coach_id)
-        parsed_instruction = parse_coach_prompt(instruction.get("prompt", ""))
+        # Guardrail: Detect exhaustion/tiredness (robust regex match)
+        exhaustion_patterns = [
+            r"\btired\b", r"\bexhausted\b", r"can't do more", r"\bfatigued\b", r"no energy", r"too tired", r"worn out",
+            r"i'?m really tired", r"i can't do more", r"i'?m too tired", r"i'?m exhausted", r"i'?m worn out"
+        ]
+        if any(re.search(pattern, user_input) for pattern in exhaustion_patterns):
+            logger.debug("User expressed exhaustion/tiredness (robust match). Routing to exhaustion response.")
+            memory_store.update(user_id, {"user_state": "tired"})
+            state["node_output"] = "I understand you're tired. It's okay to rest! Would you like a lighter exercise or a rest day?"
+            return "finalize"
+        
+        # Guardrail: Detect feedback (completion)
+        feedback_keywords = ["completed", "finished", "done", "accomplished", "i did it", "i have done", "i finished"]
+        if any(word in user_input for word in feedback_keywords):
+            logger.debug("User provided feedback/completion. Routing to feedback acknowledgment.")
+            memory_store.update(user_id, {"feedback": user_input, "user_state": "completed"})
+            state["node_output"] = "Great job on completing your exercise! No more reminders for today."
+            return "finalize"
+        
+        instruction = fetch_agent_owner_instructions(user_id, agent_owner_id)
+        parsed_instruction = parse_agent_owner_prompt(instruction.get("prompt", ""))
         logger.debug(f"Parsed instruction: {parsed_instruction}")
         
         intent = route_input(user_input, user_id)
@@ -243,6 +262,7 @@ def build_graph():
                 "check_feedback": "check_feedback",
                 "schedule": "schedule",
                 "answer_workout_question": "answer_workout_question",
+                "finalize": "finalize",
                 END: END
             }
         )
@@ -254,6 +274,7 @@ def build_graph():
                 "check_feedback": "check_feedback",
                 "schedule": "schedule",
                 "answer_workout_question": "answer_workout_question",
+                "finalize": "finalize",
                 END: END
             }
         )
@@ -265,6 +286,7 @@ def build_graph():
                 "check_feedback": "check_feedback",
                 "schedule": "schedule",
                 "answer_workout_question": "answer_workout_question",
+                "finalize": "finalize",
                 END: END
             }
         )
@@ -276,6 +298,7 @@ def build_graph():
                 "check_feedback": "check_feedback",
                 "schedule": "schedule",
                 "answer_workout_question": "answer_workout_question",
+                "finalize": "finalize",
                 END: END
             }
         )
@@ -287,6 +310,7 @@ def build_graph():
                 "check_feedback": "check_feedback",
                 "schedule": "schedule",
                 "answer_workout_question": "answer_workout_question",
+                "finalize": "finalize",
                 END: END
             }
         )
